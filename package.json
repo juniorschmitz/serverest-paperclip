@@ -1,15 +1,27 @@
 {
-  "name": "serverest-paperclip",
+  "name": "serverest-compassuol-tests",
   "version": "0.1.0",
   "private": true,
-  "description": "Automated test suite (API + UI) for the ServeRest CompassUOL instance",
-  "type": "module",
+  "description": "Playwright test suite for ServeRest CompassUOL (API + UI). Testing CIA.",
   "scripts": {
     "test": "playwright test",
-    "test:api": "playwright test tests/api",
-    "report": "playwright show-report"
+    "test:api": "playwright test --project=api",
+    "test:ui": "playwright test --project=ui",
+    "test:smoke": "playwright test --grep @smoke",
+    "test:spike": "playwright test --project=ui --grep @spike",
+    "test:headed": "playwright test --project=ui --headed",
+    "typecheck": "tsc --noEmit",
+    "report": "playwright show-report",
+    "reliability": "node scripts/reliability.mjs",
+    "install:browsers": "playwright install chromium",
+    "ca": "node scripts/export-corporate-ca.mjs"
   },
   "devDependencies": {
-    "@playwright/test": "^1.47.0"
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^22.10.0",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "dotenv": "^16.4.7",
+    "typescript": "^5.7.2"
   }
 }

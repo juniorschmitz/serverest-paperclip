@@ -1,0 +1,394 @@
+name: tests
+
+# Runs on every change. Internal pushes are gated by the `push` trigger; pull
+# requests from forks are gated by `pull_request`. The `if:` on the setup job
+# skips the duplicate `pull_request` run for same-repo branches, so each change
+# produces exactly one run.
+on:
+  push:
+    branches: ['**']
+    tags-ignore: ['**']
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # ---------------------------------------------------------------------------
+  # Runtime tuning lives here, in one place.
+  #
+  # Total concurrent clients against the target = (API_SHARDS x API_WORKERS) +
+  # (UI_SHARDS x UI_WORKERS). docs/shared-sandbox-rules.md caps that at 4:
+  # compassuol.serverest.dev is a shared public sandbox nobody pays for, and
+  # "do not stress it" is an engagement rule, not a preference.
+  #
+  # Raising these is therefore a load decision as well as a speed decision.
+  # Read docs/ci.md before you do, and check the next flake scan afterwards.
+  # ---------------------------------------------------------------------------
+  API_SHARDS: '1'
+  API_WORKERS: '2'
+  UI_SHARDS: '1'
+  UI_WORKERS: '2'
+
+  # Correlates every identity the suite seeds in the shared sandbox back to this
+  # run, and keeps concurrent runs from colliding. Shards append their own index.
+  TEST_RUN_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
+  TEST_ENV: staging
+  # Optional non-secret overrides. Set as repo *variables*, not secrets — a
+  # public sandbox URL is not a credential. Empty means "use the checked-in
+  # default in src/config/environments.ts".
+  API_BASE_URL: ${{ vars.API_BASE_URL }}
+  UI_BASE_URL: ${{ vars.UI_BASE_URL }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Fast fail. Everything here is seconds, and it catches the mistakes that
+  # would otherwise burn the browser shards.
+  # ---------------------------------------------------------------------------
+  setup:
+    name: lint & typecheck
+    # Skip the redundant pull_request run for branches that live in this repo.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      playwright-version: ${{ steps.pw.outputs.version }}
+      api-shards: ${{ steps.shards.outputs.api }}
+      ui-shards: ${{ steps.shards.outputs.ui }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Read the pinned Playwright version straight out of the lockfile so the
+      # browser cache key is available *before* npm ci, and is exact.
+      - name: Resolve Playwright version
+        id: pw
+        run: |
+          version="$(node -e 'const l=require("./package-lock.json");process.stdout.write((l.packages["node_modules/@playwright/test"]||{}).version||"")')"
+          if [ -z "$version" ]; then
+            echo "::error::Could not resolve @playwright/test from package-lock.json"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Playwright $version"
+
+      # Expand the shard counts into matrix arrays, so the shard total lives in
+      # exactly one place. Without this, `matrix.shard: [1, 2]` and
+      # `--shard=x/2` are two numbers that can silently disagree — and a
+      # disagreement there means tests are never run rather than run twice.
+      - name: Build shard matrices
+        id: shards
+        run: |
+          expand() { node -e 'const n=Number(process.argv[1]);if(!Number.isInteger(n)||n<1){process.exit(1)}process.stdout.write(JSON.stringify(Array.from({length:n},(_,i)=>i+1)))' "$1"; }
+          api="$(expand "$API_SHARDS")" || { echo "::error::API_SHARDS must be a positive integer, got '$API_SHARDS'"; exit 1; }
+          ui="$(expand "$UI_SHARDS")"  || { echo "::error::UI_SHARDS must be a positive integer, got '$UI_SHARDS'"; exit 1; }
+          echo "api=$api" >> "$GITHUB_OUTPUT"
+          echo "ui=$ui" >> "$GITHUB_OUTPUT"
+          echo "api shards: $api ($API_WORKERS workers each)"
+          echo "ui  shards: $ui ($UI_WORKERS workers each)"
+          echo "concurrent clients against the target: $(( API_SHARDS * API_WORKERS + UI_SHARDS * UI_WORKERS )) (cap 4)"
+
+      # Boundary guard: credentials must never reach the repo. Cheap, and it
+      # blocks the exact mistake that is hardest to undo once pushed.
+      - name: No committed secrets
+        run: |
+          leaked="$(git ls-files | grep -E '(^|/)\.env($|\.)' | grep -v '\.env\.example$' || true)"
+          if [ -n "$leaked" ]; then
+            echo "::error::Environment files are committed to the repo: $leaked"
+            exit 1
+          fi
+          echo "OK: no .env files tracked (only .env.example, which holds no secrets)."
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # A stray .only silently shrinks the suite to one test and still reports
+      # green. forbidOnly in the Playwright config catches it at runtime; this
+      # catches it before six jobs have started.
+      - name: Assert no .only leaked into the suite
+        run: |
+          if grep -rnE '\.only\(' tests/ 2>/dev/null; then
+            echo "::error::test.only/describe.only is committed — it would hide the rest of the suite"
+            exit 1
+          fi
+          echo "OK: no .only in tests/."
+
+      - name: Quarantine list is current
+        run: node scripts/quarantine-audit.mjs
+
+  # ---------------------------------------------------------------------------
+  # API tests. No browser, so no browser download and no browser cache — this
+  # is the cheapest signal in the pipeline and it reports first.
+  # ---------------------------------------------------------------------------
+  api:
+    name: api (shard ${{ matrix.shard }})
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.setup.outputs.api-shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      # --retries=0 is deliberate and is the core of the flake policy: a failure
+      # here means the build is red. Flakes are found by the nightly flake scan
+      # and handled by explicit quarantine, never by a silent retry.
+      # See docs/flake-policy.md.
+      - name: Run API tests
+        env:
+          TEST_RUN_ID: ${{ env.TEST_RUN_ID }}-api${{ matrix.shard }}
+          WORKERS: ${{ env.API_WORKERS }}
+        run: |
+          npx playwright test \
+            --project=api \
+            --shard="${{ matrix.shard }}/$API_SHARDS" \
+            --retries=0 \
+            --grep-invert='@quarantine' \
+            --reporter=blob
+
+      # Shards from different projects can emit identically named zips; rename
+      # so that merge-multiple cannot clobber one with the other.
+      - name: Stage blob report
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p blob-out
+          mv blob-report/*.zip "blob-out/api-${{ matrix.shard }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: blob-api-${{ matrix.shard }}
+          path: blob-out
+          retention-days: 1 # intermediate; the merged report is the durable one
+
+  # ---------------------------------------------------------------------------
+  # UI tests. Chromium only, restored from cache on almost every run.
+  # ---------------------------------------------------------------------------
+  ui:
+    name: ui (shard ${{ matrix.shard }})
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.setup.outputs.ui-shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: Cache browsers
+        id: browser-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ needs.setup.outputs.playwright-version }}-chromium
+
+      # On a cache hit only the OS-level shared libraries are missing, and those
+      # are the fast part. Full download only when the pinned version changed.
+      - name: Install chromium + deps (cache miss)
+        if: steps.browser-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+
+      - name: Install system deps only (cache hit)
+        if: steps.browser-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+
+      - name: Run UI tests
+        env:
+          TEST_RUN_ID: ${{ env.TEST_RUN_ID }}-ui${{ matrix.shard }}
+          WORKERS: ${{ env.UI_WORKERS }}
+        run: |
+          npx playwright test \
+            --project=ui \
+            --shard="${{ matrix.shard }}/$UI_SHARDS" \
+            --retries=0 \
+            --grep-invert='@quarantine' \
+            --reporter=blob
+
+      - name: Stage blob report
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p blob-out
+          mv blob-report/*.zip "blob-out/ui-${{ matrix.shard }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: blob-ui-${{ matrix.shard }}
+          path: blob-out
+          retention-days: 1
+
+      # Raw traces/screenshots/video for the failing run. The merged HTML report
+      # below already embeds these; this is the escape hatch for when someone
+      # wants the files directly.
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: failure-artifacts-ui-${{ matrix.shard }}
+          path: test-results/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Quarantined tests run here, visibly, and cannot make the build red.
+  # A quarantine that nobody looks at is the same as a deleted test, so the
+  # results land in the run summary on every single run.
+  #
+  # Runs after api/ui rather than alongside them, so it does not spend any of
+  # the shared-sandbox concurrency budget while the gate is using it.
+  # ---------------------------------------------------------------------------
+  quarantined:
+    name: quarantined (non-blocking)
+    needs: [setup, api, ui]
+    if: ${{ !cancelled() && needs.setup.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: Cache browsers
+        id: browser-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ needs.setup.outputs.playwright-version }}-chromium
+
+      - if: steps.browser-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+      - if: steps.browser-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+
+      - name: Run quarantined tests
+        continue-on-error: true
+        env:
+          TEST_RUN_ID: ${{ env.TEST_RUN_ID }}-quarantine
+          PLAYWRIGHT_JSON_OUTPUT_NAME: quarantine-report.json
+          WORKERS: '2'
+        run: |
+          npx playwright test \
+            --grep='@quarantine' \
+            --retries=0 \
+            --pass-with-no-tests \
+            --reporter=json || true
+
+      - name: Publish quarantine status
+        run: node scripts/quarantine-report.mjs quarantine-report.json >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: quarantine-report
+          path: quarantine-report.json
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # One report for the whole run, one set of numbers. Runs even when shards
+  # failed — a failed run is exactly when someone needs the report.
+  #
+  # This is the job to mark as the required status check.
+  # ---------------------------------------------------------------------------
+  report:
+    name: report
+    needs: [setup, api, ui]
+    if: ${{ !cancelled() && needs.setup.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: Download shard reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: blob-*
+          path: all-blob-reports
+          merge-multiple: true
+
+      # `github` gives inline annotations on the failing lines; `html` is the
+      # openable report with traces embedded; `json` feeds the numbers below.
+      # The github reporter writes to stdout, so the json reporter must be
+      # pointed at a file — piping stdout would interleave the two.
+      - name: Merge into one report
+        run: |
+          npx playwright merge-reports \
+            --reporter=html,github,json \
+            ./all-blob-reports
+        env:
+          PLAYWRIGHT_HTML_REPORT: playwright-report
+          PLAYWRIGHT_JSON_OUTPUT_NAME: merged-report.json
+
+      - name: Upload HTML report
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 30
+          if-no-files-found: warn
+
+      # Pass rate, runtime, flake count, slowest tests — in the run summary, so
+      # nobody has to download an artifact to find out what happened.
+      - name: Pipeline health summary
+        run: node scripts/ci-health.mjs merged-report.json
+
+      - name: Upload health metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-health
+          path: ci-health.json
+          retention-days: 90 # trend data: outlives the report it came from
+          if-no-files-found: ignore
+
+      # Optional. Absent secret => step logs and skips, never fails. GitHub
+      # already emails the pushing author on failure, so this is additive.
+      - name: Notify Slack on failure
+        if: ${{ needs.api.result != 'success' || needs.ui.result != 'success' }}
+        continue-on-error: true
+        run: |
+          node scripts/notify-slack.mjs \
+            --report ci-health.json \
+            --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+      # The gate. Red whenever any shard was red. Quarantined tests are not in
+      # this path by construction, so they cannot make it green or red.
+      - name: Gate
+        if: ${{ needs.api.result != 'success' || needs.ui.result != 'success' }}
+        run: |
+          echo "::error::Suite failed — api=${{ needs.api.result }} ui=${{ needs.ui.result }}. Open the 'playwright-report' artifact for traces."
+          exit 1

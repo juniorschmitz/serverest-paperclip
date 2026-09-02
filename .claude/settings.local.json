@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(C:\\Users\\jacques.schmitz\\.paperclip\\instances\\default\\projects\\d2e2e85c-6c6c-4e87-8f61-6d70bff8d7d4\\42cb954b-cf80-4bc9-968a-45d980d06c70\\_default/scripts/paperclip-issue-update.sh:*)",
+      "Bash(C:\\Users\\jacques.schmitz\\.paperclip\\instances\\default\\projects\\d2e2e85c-6c6c-4e87-8f61-6d70bff8d7d4\\42cb954b-cf80-4bc9-968a-45d980d06c70\\_default/scripts/paperclip:*)",
+      "Bash(curl:*)",
+      "Bash(env)",
+      "Bash(env:*)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\jacques.schmitz\\.paperclip\\instances\\default\\companies\\d2e2e85c-6c6c-4e87-8f61-6d70bff8d7d4",
+      "C:\\Users\\jacques.schmitz\\.paperclip\\instances\\default\\companies\\d2e2e85c-6c6c-4e87-8f61-6d70bff8d7d4\\acp-engine\\agents\\324a96a6-f2ea-44b8-940e-d214bc6bb8ae",
+      "C:\\Users\\jacques.schmitz\\.paperclip\\instances\\default\\companies\\d2e2e85c-6c6c-4e87-8f61-6d70bff8d7d4\\acp-engine\\agents\\34710527-e23b-402a-b81a-c1e4282b4d2f",
+      "C:\\Users\\jacques.schmitz\\.paperclip\\instances\\default\\companies\\d2e2e85c-6c6c-4e87-8f61-6d70bff8d7d4\\acp-engine\\agents\\42b7d4ae-fdcb-44c5-9b87-4f0bc4307261",
+      "C:\\Users\\jacques.schmitz\\.paperclip\\instances\\default\\companies\\d2e2e85c-6c6c-4e87-8f61-6d70bff8d7d4\\acp-engine\\agents\\62d454d4-3d48-4e7b-b4cd-444afbfb4d49",
+      "C:\\Users\\jacques.schmitz\\.paperclip\\instances\\default\\companies\\d2e2e85c-6c6c-4e87-8f61-6d70bff8d7d4\\acp-engine\\agents\\840ff0e1-b69c-47e2-b9fa-3372ef4c3d74",
+      "C:\\Users\\jacques.schmitz\\.paperclip\\instances\\default\\workspaces\\324a96a6-f2ea-44b8-940e-d214bc6bb8ae",
+      "C:\\Users\\jacques.schmitz\\.paperclip\\instances\\default\\workspaces\\34710527-e23b-402a-b81a-c1e4282b4d2f",
+      "C:\\Users\\jacques.schmitz\\.paperclip\\instances\\default\\workspaces\\42b7d4ae-fdcb-44c5-9b87-4f0bc4307261",
+      "C:\\Users\\jacques.schmitz\\.paperclip\\instances\\default\\workspaces\\62d454d4-3d48-4e7b-b4cd-444afbfb4d49",
+      "C:\\Users\\jacques.schmitz\\.paperclip\\instances\\default\\workspaces\\840ff0e1-b69c-47e2-b9fa-3372ef4c3d74"
+    ],
+    "defaultMode": "default"
+  }
+}

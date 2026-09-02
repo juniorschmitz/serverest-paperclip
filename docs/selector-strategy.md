@@ -1,0 +1,135 @@
+# Selector strategy
+
+The rule this suite is judged by: **a purely cosmetic change to the UI must not
+turn a test red.** Restyling a button, swapping a CSS framework, reordering a
+list, translating a label — none of those change behaviour, so none of them
+should change a result. A suite that fails on those is worse than no suite,
+because the team learns to ignore it.
+
+## The tiers, in order
+
+Always take the highest tier available.
+
+### Tier 1 — `getByTestId`, from the app's own `data-testid`
+
+This is the primary selector for essentially everything here, because the
+application is unusually well annotated: it ships `data-testid` on every control
+that matters. Configured once in `playwright.config.ts`:
+
+```ts
+use: { testIdAttribute: 'data-testid' }
+```
+
+and used as `page.getByTestId('cadastrar')`.
+
+A test id is the only selector that is explicitly a contract with the test
+suite. Class names, DOM structure and copy all belong to design; a test id
+belongs to us, and changing it is a deliberate act.
+
+The ids present in the shipped bundle, as read from it directly:
+
+| Area | Test ids |
+|---|---|
+| Register | `nome`, `email`, `password`, `checkbox`, `cadastrar` |
+| Login | `email`, `senha`, `entrar`, `cadastrar` |
+| Admin dashboard | `cadastrarUsuarios`, `listarUsuarios`, `cadastarProdutos`, `cadastrarProdutos`, `listarProdutos`, `relatorios`, `logout` |
+| Product form | `nome`, `preco`, `descricao`, `quantidade`, `imagem`, `cadastrarProdutos` |
+| Storefront | `pesquisar`, `botaoPesquisar`, `adicionarNaLista`, `shopping-cart-button` |
+| Product detail | `product-detail-name`, `product-detail-link`, `product-increase-quantity`, `product-decrease-quantity`, `quantity` |
+| Cart | `checkout-products`, `shopping-cart-product-name`, `shopping-cart-product-quantity`, `shopping-cart-empty-message`, `limparLista` |
+
+Two of those deserve a note.
+
+*The password field is `password` on the register page and `senha` on the login
+page.* Not a mistake on our side — the app is genuinely inconsistent. The page
+objects encode each correctly, which is exactly the sort of thing page objects
+are for.
+
+*`cadastarProdutos` is misspelled in the shipped bundle* (no first "r"), while
+`cadastrarProdutos` also exists elsewhere. `AdminHomePage` matches either:
+
+```ts
+this.cadastrarProdutos = page
+  .getByTestId('cadastarProdutos')
+  .or(page.getByTestId('cadastrarProdutos'))
+  .first();
+```
+
+If someone ever fixes the typo, nothing here breaks. A test that pinned the
+misspelling would break on a change that improves the app, and a test that
+punishes improvement gets deleted.
+
+*A third one, found in practice rather than in the static bundle read:*
+`data-testid="listaProdutos"` was originally recorded above as a Storefront id,
+on the assumption it named the product grid. Verified live on 2026-09-02, it is
+actually bound to the cart-size `<span>` badge in the nav bar (the same visual
+element `shopping-cart-button` sits next to) — the storefront's product grid
+carries no test id at all. Removed from the table above; `ShopHomePage`
+documents the finding at `productCard()` and falls back to tier 4 (`.card`,
+scoped by content) since there is nothing higher to use. This is why UI page
+objects get run against the live app before being trusted, not just typechecked
+— a `getByTestId` call resolves to *something* even when it is the wrong thing.
+
+### Tier 2 — role and accessible name
+
+When there is no test id: `getByRole('alert')`, `getByRole('button', { name: ... })`.
+This targets what the element *is* to a user, survives restyling, and has the
+side effect of failing when accessibility regresses — which is a failure worth
+having.
+
+Used here for validation banners, which carry no test id.
+
+### Tier 3 — user-visible text
+
+`getByText`, `getByLabel`. Correct when the text *is* the thing under test.
+Otherwise fragile: it breaks on copy edits and on translation, and this app's UI
+is in Portuguese while the spec examples are mixed.
+
+### Tier 4 — CSS, scoped and never positional
+
+Last resort. If it is unavoidable, scope it to a testid'd ancestor and select by
+content, never by position:
+
+```ts
+// acceptable: identified by its own name, never by position. Scope to a
+// testid'd ancestor when one genuinely exists — this page has none (see the
+// `listaProdutos` note above), so this queries the page directly.
+productCard(name: string) {
+  return this.page.locator('.card', { hasText: name });
+}
+```
+
+### Never
+
+- **XPath.** Encodes document structure, which is the thing most likely to change.
+- **`nth`, `first()`, `last()` on shared lists.** The instance under test is a
+  shared public sandbox: other people add and remove products while the suite
+  runs, so index 0 is a different row from one minute to the next. Address rows
+  by the name your own test created. `first()` is fine on an `.or()` chain,
+  where both branches are the same element.
+- **Anything generated by a recorder without review.** Codegen emits tier-3 and
+  tier-4 selectors by default.
+
+## Waiting
+
+Locators are lazy and `expect` retries, so the strategy for waiting is: don't.
+
+```ts
+// good — retries until the dashboard renders, fails with a useful message
+await expect(pages.adminHome.cadastrarUsuarios).toBeVisible();
+
+// bad — passes or fails depending on the network that day
+await page.waitForTimeout(2000);
+```
+
+There is no `waitForTimeout` anywhere in this suite and there should not be one.
+If a wait seems necessary, the missing thing is an assertion about the state you
+are actually waiting for.
+
+## Page objects
+
+A page object owns *how to reach a page* and *named locators for what is on it*.
+It does not assert. Assertions live in tests, so that a test reads as its own
+specification, and so a page object can be reused by a test that expects
+failure — a login page object that asserts success is useless for testing a bad
+password.

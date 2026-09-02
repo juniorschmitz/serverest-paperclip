@@ -1,0 +1,116 @@
+name: flake-scan
+
+# Flake *detection*, off the gating path.
+#
+# The gate (tests.yml) runs with --retries=0 and therefore cannot tell you which
+# test is unstable — only that the suite went red. This runs the suite several
+# times and reports per-test pass rates, which is what turns "CI is flaky" into
+# a named test with an owner and a review date.
+#
+# What happens to what this finds: docs/flake-policy.md.
+on:
+  schedule:
+    - cron: '0 4 * * *' # 04:00 UTC, off-peak for the shared sandbox
+  workflow_dispatch:
+    inputs:
+      repeats:
+        description: 'Times to run the suite'
+        required: false
+        default: '5'
+      grep:
+        description: 'Optional tag/pattern to restrict the scan (e.g. @smoke)'
+        required: false
+        default: ''
+
+concurrency:
+  group: flake-scan
+  cancel-in-progress: false # never truncate a stability scan
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: stability scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CI: 'true'
+      TEST_ENV: staging
+      TEST_RUN_ID: scan-${{ github.run_id }}-${{ github.run_attempt }}
+      API_BASE_URL: ${{ vars.API_BASE_URL }}
+      UI_BASE_URL: ${{ vars.UI_BASE_URL }}
+      # Serial-ish on purpose: the scan is measuring stability, and heavy
+      # parallelism against a shared sandbox introduces the very interference
+      # it is trying to measure. Well inside the 4-worker cap in
+      # docs/shared-sandbox-rules.md.
+      WORKERS: '2'
+      # docs/shared-sandbox-rules.md asks for leaks to be loud in a nightly job.
+      # Here is that job: a cleanup that could not delete what it created fails
+      # the scan rather than warning into a log nobody reads.
+      STRICT_CLEANUP: 'true'
+      REPEATS: ${{ github.event.inputs.repeats || '5' }}
+      GREP: ${{ github.event.inputs.grep || '' }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Resolve Playwright version
+        id: pw
+        run: |
+          version="$(node -e 'const l=require("./package-lock.json");process.stdout.write((l.packages["node_modules/@playwright/test"]||{}).version||"")')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - run: npm ci
+
+      - name: Cache browsers
+        id: browser-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-chromium
+
+      - if: steps.browser-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+      - if: steps.browser-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+
+      # Includes quarantined tests deliberately: the scan is how a quarantined
+      # test earns its way back out of quarantine.
+      - name: Run flake scan
+        id: scan
+        run: node scripts/flake-scan.mjs --repeats "$REPEATS" ${GREP:+--grep "$GREP"}
+
+      - name: Publish flake report
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -f flake-scans/latest/summary.md ]; then
+            cat flake-scans/latest/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "The flake scan produced no summary — see the job log." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: flake-scan-report
+          path: flake-scans/
+          retention-days: 90 # trend data — the flake list is built from this
+          if-no-files-found: warn
+
+      - name: Notify on detected flakes
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "No SLACK_WEBHOOK_URL configured — skipping notification."
+            exit 0
+          fi
+          node scripts/notify-slack.mjs \
+            --flake-scan flake-scans/latest/summary.json \
+            --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
