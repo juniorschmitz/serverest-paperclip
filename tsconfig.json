@@ -19,10 +19,5 @@
     }
   },
   "include": ["src/**/*.ts", "tests/**/*.ts", "playwright.config.ts"],
-  "exclude": [
-    "node_modules",
-    "tests/support/serverest.ts",
-    "tests/api/smoke.spec.ts",
-    "tests/api/regression-security.spec.ts"
-  ]
+  "exclude": ["node_modules"]
 }
