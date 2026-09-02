@@ -151,4 +151,30 @@ test.describe('@known-defect characterisation pins', () => {
       'an anonymous caller should not be able to confirm a password by filtering on it',
     ).toBeDefined();
   });
+
+  test('UNFIXED (TES-18): the login JWT still carries the account password as a claim', async ({
+    newActor,
+  }) => {
+    // Ported from the pre-convention tests/api/regression-security.spec.ts
+    // (retired alongside tests/api/smoke.spec.ts and tests/support/serverest.ts
+    // — see TES-23) so this defect keeps a live guard under the characterisation
+    // convention instead of losing coverage when that file was deleted.
+    const actor = await newActor();
+
+    const header = await actor.api.tokenManager.authHeader(actor.user.credentials);
+    const claims = decodeJwtClaims(header);
+
+    // Flip to `expect(claims).not.toHaveProperty('password')` when TES-18 closes.
+    expect(
+      claims['password'],
+      'the JWT payload should not carry the account password',
+    ).toBe(actor.user.payload.password);
+  });
 });
+
+/** Decode a `Bearer <jwt>` token's payload claims without verifying the signature. */
+function decodeJwtClaims(header: string): Record<string, unknown> {
+  const jwt = header.replace(/^Bearer\s+/i, '');
+  const payload = jwt.split('.')[1] ?? '';
+  return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as Record<string, unknown>;
+}
