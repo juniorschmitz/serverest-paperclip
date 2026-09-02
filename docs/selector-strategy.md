@@ -34,7 +34,7 @@ The ids present in the shipped bundle, as read from it directly:
 | Login | `email`, `senha`, `entrar`, `cadastrar` |
 | Admin dashboard | `cadastrarUsuarios`, `listarUsuarios`, `cadastarProdutos`, `cadastrarProdutos`, `listarProdutos`, `relatorios`, `logout` |
 | Product form | `nome`, `preco`, `descricao`, `quantidade`, `imagem`, `cadastrarProdutos` |
-| Storefront | `pesquisar`, `botaoPesquisar`, `listaProdutos`, `adicionarNaLista`, `shopping-cart-button` |
+| Storefront | `pesquisar`, `botaoPesquisar`, `adicionarNaLista`, `shopping-cart-button` |
 | Product detail | `product-detail-name`, `product-detail-link`, `product-increase-quantity`, `product-decrease-quantity`, `quantity` |
 | Cart | `checkout-products`, `shopping-cart-product-name`, `shopping-cart-product-quantity`, `shopping-cart-empty-message`, `limparLista` |
 
@@ -59,6 +59,17 @@ If someone ever fixes the typo, nothing here breaks. A test that pinned the
 misspelling would break on a change that improves the app, and a test that
 punishes improvement gets deleted.
 
+*A third one, found in practice rather than in the static bundle read:*
+`data-testid="listaProdutos"` was originally recorded above as a Storefront id,
+on the assumption it named the product grid. Verified live on 2026-09-02, it is
+actually bound to the cart-size `<span>` badge in the nav bar (the same visual
+element `shopping-cart-button` sits next to) — the storefront's product grid
+carries no test id at all. Removed from the table above; `ShopHomePage`
+documents the finding at `productCard()` and falls back to tier 4 (`.card`,
+scoped by content) since there is nothing higher to use. This is why UI page
+objects get run against the live app before being trusted, not just typechecked
+— a `getByTestId` call resolves to *something* even when it is the wrong thing.
+
 ### Tier 2 — role and accessible name
 
 When there is no test id: `getByRole('alert')`, `getByRole('button', { name: ... })`.
@@ -80,9 +91,11 @@ Last resort. If it is unavoidable, scope it to a testid'd ancestor and select by
 content, never by position:
 
 ```ts
-// acceptable: scoped to a testid'd container, identified by its own name
+// acceptable: identified by its own name, never by position. Scope to a
+// testid'd ancestor when one genuinely exists — this page has none (see the
+// `listaProdutos` note above), so this queries the page directly.
 productCard(name: string) {
-  return this.productList.locator('.card', { hasText: name });
+  return this.page.locator('.card', { hasText: name });
 }
 ```
 

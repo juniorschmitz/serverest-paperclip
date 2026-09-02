@@ -8,6 +8,29 @@ const isCI = !!process.env['CI'];
 export default defineConfig({
   testDir: './tests',
 
+  /**
+   * Excludes `@slow` by default — currently just the genuinely-600s-elapsed
+   * token test (tests/api/token-expiry.api.spec.ts). That test has to be a
+   * real 10+ minute wait (see its own doc comment for why it cannot be sped
+   * up), which means it must never be swept into an ordinary `--project=api`
+   * run: every plain `npm test`, `npm run test:api`, and every
+   * `npm run reliability -- N --project=api` would otherwise cost 10+ minutes
+   * PER RUN just from matching this one file's `.api.spec.ts` name.
+   *
+   * A CLI `--grep` does NOT override this — Playwright ANDs config-level
+   * `grepInvert` with a CLI `--grep`, it does not replace it (verified with
+   * `--list`, 2026-09-02: `--project=api --grep "600s-expired"` alone still
+   * lists 0 matches). So the only way to actually run the slow test is the
+   * explicit env escape hatch below, matching this repo's existing pattern for
+   * opt-in behaviour (STRICT_CONTRACT, STRICT_CLEANUP in src/config/env.ts):
+   *
+   *   RUN_SLOW=1 npx playwright test --project=api --grep "600s-expired"
+   *
+   * Verified: `--project=api --list` lists 43 tests with RUN_SLOW unset, and
+   * `RUN_SLOW=1 --project=api --grep "600s-expired" --list` lists exactly 1.
+   */
+  grepInvert: process.env['RUN_SLOW'] ? undefined : /@slow/,
+
   // Every test seeds its own data and cleans up after itself, so nothing shares
   // state and full parallelism is safe. Uniqueness of generated identities is
   // what makes this true — see src/data/identity.ts.

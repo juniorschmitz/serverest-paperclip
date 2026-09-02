@@ -100,3 +100,29 @@ API answers with 200, and the registry treats that as success.
 Load testing, and destructive testing generally, are out of scope on this
 engagement — the plan says so, and it is a shared instance we do not own. We
 test it; we do not hammer it. Parallelism is capped at 4 workers.
+
+**This is not just policy — ServeRest enforces it.** The instance ships its own
+anti-load-test detector and answers with a blanket `429`
+(`"Foi detectado comportamento equivalente a teste de carga, não execute teste
+de carga nesse ambiente"`) once it judges the request rate from an IP looks like
+load testing. It is instance-wide, not per-endpoint or per-token, and every
+in-flight request pays for it — `POST /usuarios` inside `seed()`, a
+`swagger.json` worker-setup fetch, a teardown delete, all come back 429 the
+same way once it trips.
+
+Measured directly (2026-09-02): ten consecutive full-suite runs (`npm run
+reliability -- 10 --project=api`) fired back-to-back with no gap between them
+failed **5 of 10** on 429s. The same ten runs with an 8-second cooldown between
+them (now the default in `scripts/reliability.mjs`, `--cooldown` to change it)
+were clean. The trigger is cumulative request *rate*, not any single run's
+volume — a lone run of the suite does not approach it.
+
+**Consequence for whoever builds TES-9 (CI):** anything that fires multiple
+full-suite runs close together against this instance — concurrent shards
+without staggering, `flake-scan.mjs`'s nightly N repeats, two workflows
+triggered back to back — can reproduce this. If the gate goes red with 429s in
+the failure body, this is why, and it is an environmental rate limit, not a
+product defect or a flaky test; retrying will not help (see §1's reasoning) but
+pacing will. `scripts/reliability.mjs`'s cooldown is one instance of the fix;
+CI needs its own answer to the same constraint, whatever shard/schedule shape
+it ends up with.
