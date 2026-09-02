@@ -1,0 +1,15 @@
+{
+  "name": "serverest-paperclip",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Automated test suite (API + UI) for the ServeRest CompassUOL instance",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "test:api": "playwright test tests/api",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.47.0"
+  }
+}
