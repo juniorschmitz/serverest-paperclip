@@ -23,19 +23,62 @@ function uniqueSuffix(): string {
 
 export async function createUser(
   api: APIRequestContext,
-  opts: { admin?: boolean } = {}
+  opts: { admin?: boolean; password?: string } = {}
 ): Promise<SeededUser> {
   const suffix = uniqueSuffix();
   const body = {
     nome: `QA User ${suffix}`,
     email: `qa.${suffix}@qa.com`,
-    password: 'Str0ngPass!',
+    password: opts.password ?? 'Str0ngPass!',
     administrador: opts.admin ? 'true' : 'false',
   };
   const res = await api.post('/usuarios', { data: body });
   expect(res.status(), await res.text()).toBe(201);
   const json = await res.json();
   return { _id: json._id, ...body } as SeededUser;
+}
+
+/** Admin-authenticated product creation. Unique nome per call (ServeRest 409s on dupes). */
+export async function createProduct(
+  api: APIRequestContext,
+  token: string,
+  opts: { preco?: number; quantidade?: number } = {}
+): Promise<{ _id: string; nome: string }> {
+  const suffix = uniqueSuffix();
+  const body = {
+    nome: `QA Product ${suffix}`,
+    preco: opts.preco ?? 100,
+    descricao: 'regression fixture',
+    quantidade: opts.quantidade ?? 50,
+  };
+  const res = await api.post('/produtos', { data: body, headers: { Authorization: token } });
+  expect(res.status(), await res.text()).toBe(201);
+  const json = await res.json();
+  return { _id: json._id, nome: body.nome };
+}
+
+/** Create a cart for the token's user containing one product. One cart per user. */
+export async function createCart(
+  api: APIRequestContext,
+  token: string,
+  idProduto: string,
+  quantidade = 1
+): Promise<{ _id: string }> {
+  const res = await api.post('/carrinhos', {
+    data: { produtos: [{ idProduto, quantidade }] },
+    headers: { Authorization: token },
+  });
+  expect(res.status(), await res.text()).toBe(201);
+  const json = await res.json();
+  return { _id: json._id };
+}
+
+/** Decode a `Bearer <jwt>` token's payload claims without verifying the signature. */
+export function decodeJwtClaims(token: string): Record<string, unknown> {
+  const jwt = token.replace(/^Bearer\s+/i, '');
+  const payload = jwt.split('.')[1];
+  const json = Buffer.from(payload, 'base64url').toString('utf8');
+  return JSON.parse(json);
 }
 
 export async function login(
